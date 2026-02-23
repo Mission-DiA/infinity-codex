@@ -195,6 +195,89 @@ const PLATFORM_SCRIPT = `
 </script>
 `;
 
+// Catalog cache
+let catalogCache: { data: any[] | null; expiry: number } = { data: null, expiry: 0 };
+const CATALOG_TTL = 5 * 60 * 1000; // 5 minutes
+const ACCENT_PALETTE = ['#a371f7', '#3fb950', '#f97316', '#3b82f6', '#ef4444', '#eab308'];
+
+function titleCase(str: string): string {
+  return str.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Auto-discovery catalog endpoint
+app.get('/api/catalog', async (_req: Request, res: Response) => {
+  try {
+    // Return cached if valid
+    if (catalogCache.data && Date.now() < catalogCache.expiry) {
+      return res.json(catalogCache.data);
+    }
+
+    // List top-level "folders" using delimiter
+    const [, , apiResponse] = await bucket.getFiles({ delimiter: '/' });
+    const prefixes: string[] = (apiResponse as any)?.prefixes || [];
+
+    const libraries: any[] = [];
+    let accentIndex = 0;
+
+    for (const prefix of prefixes) {
+      const folderName = prefix.replace(/\/$/, '');
+
+      // Skip internal/hidden folders
+      if (folderName.startsWith('_') || folderName.startsWith('.')) {
+        continue;
+      }
+
+      // Check that folder has an index.html (or any .html entry point)
+      const indexFile = bucket.file(`${folderName}/index.html`);
+      const [indexExists] = await indexFile.exists();
+      let docsUrl = `/${folderName}/index.html`;
+
+      if (!indexExists) {
+        const [files] = await bucket.getFiles({ prefix: `${folderName}/`, delimiter: '/', maxResults: 20 });
+        const htmlFile = files.find((f: { name: string }) => f.name.endsWith('.html'));
+        if (!htmlFile) continue;
+        docsUrl = `/${htmlFile.name}`;
+      }
+
+      // Try to load optional catalog.json
+      let metadata: any = {};
+      try {
+        const catalogFile = bucket.file(`${folderName}/catalog.json`);
+        const [catalogExists] = await catalogFile.exists();
+        if (catalogExists) {
+          const [content] = await catalogFile.download();
+          metadata = JSON.parse(content.toString('utf-8'));
+        }
+      } catch (e) {
+        // catalog.json missing or invalid — use defaults
+      }
+
+      libraries.push({
+        id: folderName,
+        title: metadata.title || titleCase(folderName),
+        description: metadata.description || 'Documentation',
+        category: metadata.category || 'Documentation',
+        icon: metadata.icon || '📖',
+        version: metadata.version || '',
+        downloads: '—',
+        accent: metadata.accent || ACCENT_PALETTE[accentIndex % ACCENT_PALETTE.length],
+        docsUrl: metadata.docsUrl || docsUrl
+      });
+
+      accentIndex++;
+    }
+
+    // Cache results
+    catalogCache = { data: libraries, expiry: Date.now() + CATALOG_TTL };
+    console.log(`[CATALOG] Discovered ${libraries.length} doc sets: ${libraries.map(l => l.id).join(', ')}`);
+
+    return res.json(libraries);
+  } catch (error) {
+    console.error('[CATALOG] Error:', error);
+    return res.status(500).json({ error: 'Failed to load catalog' });
+  }
+});
+
 // Serve all content from GCS (Platform handles auth via iframe access)
 app.get('*', async (req: Request, res: Response) => {
   try {
