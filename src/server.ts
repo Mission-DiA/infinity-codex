@@ -170,6 +170,11 @@ app.get('/api/catalog', async (_req: Request, res: Response) => {
   }
 });
 
+// Stub: SDK calls this to init app session — Codex is stateless, just acknowledge
+app.post('/api/app_session/init', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', message: 'Static docs app — no session required' });
+});
+
 // Serve all content from GCS (Platform handles auth via iframe access)
 app.get('*', async (req: Request, res: Response) => {
   try {
