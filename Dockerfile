@@ -7,8 +7,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY .npmrc* ./
 
-# Install dependencies
-RUN npm ci && rm -f .npmrc
+# Install dependencies (npm install to resolve new @helicarrier/sdk)
+RUN npm install && rm -f .npmrc
 
 # Copy source
 COPY tsconfig.json ./
@@ -25,7 +25,7 @@ WORKDIR /app
 # Copy package files and install production dependencies only
 COPY package*.json ./
 COPY .npmrc* ./
-RUN npm ci --only=production && rm -f .npmrc
+RUN npm install --only=production && rm -f .npmrc
 
 # Copy built files
 COPY --from=builder /app/dist ./dist
