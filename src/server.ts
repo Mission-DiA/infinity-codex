@@ -1,4 +1,4 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response } from 'express';
 import { Storage } from '@google-cloud/storage';
 import mime from 'mime-types';
 import path from 'path';
@@ -14,9 +14,6 @@ const PLATFORM_URL = process.env.HELICARRIER_PLATFORM_URL || 'https://helicarrie
 const storage = new Storage();
 const bucket = storage.bucket(BUCKET_NAME);
 
-// Simple in-memory session store (for production, use Redis or similar)
-const validSessions = new Map<string, { email: string; expiresAt: number }>();
-
 // Middleware: Parse JSON
 app.use(express.json());
 
@@ -25,79 +22,12 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'healthy', bucket: BUCKET_NAME });
 });
 
-// Session initialization endpoint - called by client after SDK auth
-app.post('/api/session/init', (req: Request, res: Response) => {
-  const { email, token } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email required' });
-  }
-
-  // Generate session ID
-  const sessionId = generateSessionId();
-  const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
-
-  // Store session
-  validSessions.set(sessionId, { email, expiresAt });
-
-  // Set session cookie
-  res.cookie('axiom_session', sessionId, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none', // Required for iframe
-    maxAge: 24 * 60 * 60 * 1000
-  });
-
-  console.log(`[AUTH] Session created for ${email}`);
-  return res.json({ success: true, email });
+// Serve the Helicarrier SDK IIFE browser bundle
+app.get('/sdk/helicarrier.js', (_req: Request, res: Response) => {
+  res.sendFile(
+    path.resolve(__dirname, '../node_modules/@helicarrier/sdk/dist/browser/helicarrier.global.js')
+  );
 });
-
-// Session check endpoint
-app.get('/api/session/check', (req: Request, res: Response) => {
-  const sessionId = extractSessionId(req);
-
-  if (!sessionId) {
-    return res.json({ authenticated: false });
-  }
-
-  const session = validSessions.get(sessionId);
-  if (!session || session.expiresAt < Date.now()) {
-    validSessions.delete(sessionId);
-    return res.json({ authenticated: false });
-  }
-
-  return res.json({ authenticated: true, email: session.email });
-});
-
-// Auth middleware for docs
-const requireAuth = (req: Request, res: Response, next: NextFunction) => {
-  // Allow auth pages without session
-  if (req.path === '/' || req.path === '/auth.html') {
-    return next();
-  }
-
-  const sessionId = extractSessionId(req);
-
-  if (!sessionId) {
-    console.log(`[AUTH] No session - redirecting to auth`);
-    return res.redirect('/');
-  }
-
-  const session = validSessions.get(sessionId);
-  if (!session || session.expiresAt < Date.now()) {
-    validSessions.delete(sessionId);
-    console.log(`[AUTH] Invalid/expired session - redirecting to auth`);
-    return res.redirect('/');
-  }
-
-  next();
-};
-
-// Health check (must be before wildcard route)
-// Already defined above
-
-// API routes (must be before wildcard route)
-// Already defined above
 
 // Platform integration script + Back to Portal button (injected into all HTML pages)
 const PLATFORM_SCRIPT = `
@@ -132,10 +62,9 @@ const PLATFORM_SCRIPT = `
     height: 16px;
   }
 </style>
+<script src="/sdk/helicarrier.js"></script>
 <script>
 (function() {
-  var sessionEstablished = false;
-
   // Add Back to Portal button (only if not on portal page)
   var isPortal = window.location.pathname === '/' || window.location.pathname === '/index.html';
   if (!isPortal) {
@@ -146,50 +75,13 @@ const PLATFORM_SCRIPT = `
     document.body.appendChild(btn);
   }
 
-  // Listen for messages from Platform
-  window.addEventListener('message', function(event) {
-    var data = event.data;
-    if (!data || !data.type) return;
-
-    console.log('[Codex] Received message:', data.type);
-
-    switch (data.type) {
-      case 'SESSION_INIT':
-        // Platform is initializing session - acknowledge with SESSION_READY
-        if (window.parent !== window) {
-          window.parent.postMessage({
-            type: 'SESSION_READY',
-            payload: { success: true }
-          }, '*');
-          sessionEstablished = true;
-          console.log('[Codex] SESSION_READY sent');
-        }
-        break;
-
-      case 'SESSION_DATA':
-        // Platform sent session data - acknowledge
-        if (window.parent !== window) {
-          window.parent.postMessage({
-            type: 'SESSION_RECEIVED',
-            payload: { success: true }
-          }, '*');
-          console.log('[Codex] SESSION_RECEIVED sent');
-        }
-        break;
-
-      case 'PING':
-        // Respond to ping
-        if (window.parent !== window) {
-          window.parent.postMessage({ type: 'PONG' }, '*');
-        }
-        break;
-    }
-  });
-
-  // Send APP_READY to Platform parent
-  if (window.parent !== window) {
-    window.parent.postMessage({ type: 'APP_READY' }, '*');
-    console.log('[Codex] APP_READY sent');
+  // Initialize Helicarrier SDK (handles APP_READY, SESSION_INIT, auth, diagnostics, auto-capture)
+  if (window.Helicarrier && window.Helicarrier.HelicarrierClient) {
+    var client = new Helicarrier.HelicarrierClient({
+      platformOrigin: '${PLATFORM_URL}'
+    });
+    client.init();
+    console.log('[Codex] Helicarrier SDK initialized');
   }
 })();
 </script>
@@ -356,75 +248,6 @@ app.get('*', async (req: Request, res: Response) => {
     res.status(500).send('Internal server error');
   }
 });
-
-// Helper: Generate session ID
-function generateSessionId(): string {
-  return Array.from({ length: 32 }, () =>
-    Math.random().toString(36).charAt(2)
-  ).join('');
-}
-
-// Helper: Extract session ID from cookie
-function extractSessionId(req: Request): string | null {
-  const cookies = req.headers.cookie?.split(';') || [];
-  for (const cookie of cookies) {
-    const [name, value] = cookie.trim().split('=');
-    if (name === 'axiom_session') {
-      return value;
-    }
-  }
-  return null;
-}
-
-// Simple loader page - sends APP_READY and loads docs
-function getLoaderPageHTML(): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Infinity Codex</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      background: #f5f5f5;
-    }
-    .container { text-align: center; padding: 2rem; }
-    .spinner {
-      width: 40px; height: 40px;
-      border: 3px solid #e0e0e0;
-      border-top-color: #3b82f6;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 1rem;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .status { color: #666; margin-top: 0.5rem; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="spinner"></div>
-    <h2>Infinity Codex</h2>
-    <p class="status">Loading documentation...</p>
-  </div>
-  <script>
-    // Send APP_READY to Platform immediately
-    if (window.parent !== window) {
-      window.parent.postMessage({ type: 'APP_READY' }, '*');
-      console.log('[Codex] APP_READY sent');
-    }
-    // Redirect to docs
-    window.location.href = '/docs/index.html';
-  </script>
-</body>
-</html>`;
-}
 
 // Start server
 app.listen(PORT, () => {

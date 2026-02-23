@@ -1,6 +1,22 @@
 steps:
+  # Step 0: Setup npm authentication for @helicarrier/sdk
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'setup-npm-auth'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        ACCESS_TOKEN=$(gcloud auth print-access-token)
+        cat > /workspace/.npmrc << EOF
+        @helicarrier:registry=https://asia-south1-npm.pkg.dev/kf-dev-ops-p001/helicarrier-npm-sdk/
+        //asia-south1-npm.pkg.dev/kf-dev-ops-p001/helicarrier-npm-sdk/:_authToken=$${ACCESS_TOKEN}
+        EOF
+        echo "npm auth configured for @helicarrier/sdk"
+
   # Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-image'
+    waitFor: ['setup-npm-auth']
     args:
       - 'build'
       - '-t'

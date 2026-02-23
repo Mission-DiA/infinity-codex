@@ -3,11 +3,12 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and .npmrc for private registry auth (created by cloudbuild)
 COPY package*.json ./
+COPY .npmrc* ./
 
 # Install dependencies
-RUN npm ci
+RUN npm ci && rm -f .npmrc
 
 # Copy source
 COPY tsconfig.json ./
@@ -23,7 +24,8 @@ WORKDIR /app
 
 # Copy package files and install production dependencies only
 COPY package*.json ./
-RUN npm ci --only=production
+COPY .npmrc* ./
+RUN npm ci --only=production && rm -f .npmrc
 
 # Copy built files
 COPY --from=builder /app/dist ./dist
