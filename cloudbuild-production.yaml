@@ -57,6 +57,8 @@ steps:
       - '5'
       - '--concurrency'
       - '80'
+      - '--update-labels'
+      - 'helicarrier-app-id=infinity-codex,helicarrier-tier=app'
 
 substitutions:
   _SERVICE_NAME: axiom-docs-production
